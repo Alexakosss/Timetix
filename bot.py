@@ -148,10 +148,13 @@ class TimetableBot(commands.Bot):
         await self.add_cog(TimetableCog(self))
 
         if self.config.guild_id:
+            # A guild sync only uploads commands registered for that guild, so the
+            # global commands must be copied over first. Without this the sync
+            # would send an empty payload and Discord would keep 0 commands.
+            guild = discord.Object(id=self.config.guild_id)
+            self.tree.copy_global_to(guild=guild)
             try:
-                synced = await self.tree.sync(
-                    guild=discord.Object(id=self.config.guild_id)
-                )
+                synced = await self.tree.sync(guild=guild)
                 logger.info(
                     "Synced %d slash command(s) to guild %s",
                     len(synced),
