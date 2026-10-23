@@ -1,0 +1,24 @@
+services:
+  timetable-bot:
+    build: .
+    image: timetable-bot:latest
+    container_name: timetable-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Europe/Athens
+      DATABASE_PATH: /app/data/timetables.sqlite3
+      DOWNLOAD_DIR: /app/data/downloads
+      LOG_DIR: /app/logs
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Uncomment together with PUBLIC_FILE_BASE_URL in .env:
+      # - ./public:/app/public
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

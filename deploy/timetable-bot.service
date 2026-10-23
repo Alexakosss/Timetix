@@ -1,0 +1,25 @@
+[Unit]
+Description=1ο ΕΠΑΛ Αιγάλεω timetable Discord bot
+Documentation=https://github.com/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=timetable
+Group=timetable
+WorkingDirectory=/opt/timetable-bot
+EnvironmentFile=/opt/timetable-bot/.env
+ExecStart=/opt/timetable-bot/.venv/bin/python /opt/timetable-bot/bot.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/timetable-bot/data /opt/timetable-bot/logs /opt/timetable-bot/public
+
+[Install]
+WantedBy=multi-user.target
