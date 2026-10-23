@@ -157,11 +157,16 @@ SHA-256 hashes; it never writes the database and never contacts Discord.
 | Command | Who | What it does |
 | --- | --- | --- |
 | `/check_timetables` | everyone | Runs a check immediately; shows a Greek summary (respects `DRY_RUN`) |
+| `/send_timetable` | everyone | Fetches the current school timetable and posts it as PDF, JPG pages, or both |
 | `/status` | everyone | Current state, last check, next check, counts, errors, uptime |
 | `/baseline` | Manage Server | Records current PDFs without posting |
 | `/test_post` | Manage Server | Sends a test message; requires `DRY_RUN=false` |
 
-Command responses are ephemeral. Manual checks are rate-limited with a cooldown.
+`/check_timetables` and `/status` responses are ephemeral. `/send_timetable` posts
+the selected files in the channel where it is called. Choose one timetable
+category or both, then choose PDF, JPG, or PDF and JPG. JPG output contains one
+image per PDF page. Manual checks and timetable delivery are rate-limited with
+cooldowns.
 
 ---
 

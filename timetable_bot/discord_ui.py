@@ -2,23 +2,51 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import discord
+import pymupdf
 from discord import app_commands
 from discord.ext import commands
 
-from .categories import CATEGORY_INFO, CATEGORY_ORDER
+from .categories import CATEGORY_INFO, CATEGORY_ORDER, Category
 from .monitor import CheckInProgress, CheckSummary
 from .notifier import NotificationError
+from .scraper import ScraperError
 from .utils import format_greek_datetime, truncate, utc_now
 
 if TYPE_CHECKING:  # pragma: no cover
     from bot import TimetableBot
 
 logger = logging.getLogger(__name__)
+
+
+def _render_pdf_pages_as_jpegs(pdf_data: bytes, filename: str) -> list[tuple[str, bytes]]:
+    """Render each PDF page to a readable, size-bounded JPEG attachment."""
+
+    results: list[tuple[str, bytes]] = []
+    with pymupdf.open(stream=pdf_data, filetype="pdf") as document:
+        if document.needs_pass:
+            raise ValueError("Το PDF είναι κλειδωμένο με κωδικό.")
+        if not document.page_count:
+            raise ValueError("Το PDF δεν περιέχει σελίδες.")
+
+        stem = Path(filename).stem
+        for page_number, page in enumerate(document, start=1):
+            # Render at about 144 dpi for ordinary pages, with a hard pixel cap
+            # to avoid excessive memory use for unusually large PDF page sizes.
+            longest_side = max(page.rect.width, page.rect.height)
+            scale = min(2.0, 5000 / longest_side) if longest_side else 1.0
+            pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+            jpeg = pixmap.tobytes("jpeg", jpg_quality=85)
+            results.append((f"{stem}_selida_{page_number:02}.jpg", jpeg))
+
+    return results
 
 
 def _uptime(seconds: float) -> str:
@@ -124,6 +152,122 @@ class TimetableCog(commands.Cog):
 
         text = format_check_summary(summary, dry_run=self.bot.config.dry_run)
         await interaction.followup.send(text, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    # /send_timetable
+    # ------------------------------------------------------------------
+    @app_commands.command(
+        name="send_timetable",
+        description="Στέλνει το τρέχον πρόγραμμα του σχολείου ως PDF ή JPG",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.cooldown(1, 20.0, key=lambda i: (i.guild_id, i.user.id))
+    @app_commands.choices(
+        category=[
+            app_commands.Choice(name="Και οι δύο κατηγορίες", value="both"),
+            app_commands.Choice(name="Γ΄ Τάξης Ειδικότητας", value="specialty"),
+            app_commands.Choice(name="Γ΄ Τάξης Γενικής Παιδείας", value="general"),
+        ],
+        output_format=[
+            app_commands.Choice(name="PDF", value="pdf"),
+            app_commands.Choice(name="JPG", value="jpg"),
+            app_commands.Choice(name="PDF και JPG", value="both"),
+        ],
+    )
+    async def send_timetable(
+        self,
+        interaction: discord.Interaction,
+        category: app_commands.Choice[str],
+        output_format: app_commands.Choice[str],
+    ) -> None:
+        """Fetch and post the selected current school timetables in-channel."""
+
+        await interaction.response.defer(thinking=True)
+        try:
+            discovery = await self.bot.scraper.discover()
+        except ScraperError as exc:
+            await interaction.followup.send(
+                f"❌ Δεν μπόρεσα να βρω τα προγράμματα στον ιστότοπο του σχολείου: {truncate(str(exc), 1200)}"
+            )
+            return
+
+        if category.value == "both":
+            selected_categories = set(CATEGORY_ORDER)
+        else:
+            selected_categories = {Category(category.value)}
+        documents = [
+            document
+            for document in discovery.documents
+            if document.category in selected_categories
+        ]
+        if not documents:
+            await interaction.followup.send(
+                "Δεν βρέθηκε πρόγραμμα για την επιλεγμένη κατηγορία."
+            )
+            return
+
+        include_pdf = output_format.value in {"pdf", "both"}
+        include_jpg = output_format.value in {"jpg", "both"}
+        attachment_limit = self.bot.config.discord_max_attachment_bytes
+        attachments: list[tuple[str, bytes]] = []
+        details: list[str] = []
+        failures: list[str] = []
+
+        for document in documents:
+            label = CATEGORY_INFO[document.category].label
+            try:
+                downloaded = await self.bot.scraper.download(document)
+            except ScraperError as exc:
+                failures.append(f"{label}: {truncate(str(exc), 250)}")
+                continue
+
+            details.append(
+                f"• **{label}** — `{downloaded.attachment_filename}` (<{document.url}>)"
+            )
+            if include_pdf:
+                if downloaded.size <= attachment_limit:
+                    attachments.append((downloaded.attachment_filename, downloaded.data))
+                else:
+                    details.append(
+                        f"  Το PDF ξεπερνά το όριο αποστολής ({attachment_limit // (1024 * 1024)} MB): {document.url}"
+                    )
+
+            if include_jpg:
+                try:
+                    page_images = await asyncio.to_thread(
+                        _render_pdf_pages_as_jpegs,
+                        downloaded.data,
+                        downloaded.attachment_filename,
+                    )
+                    for image_name, image_data in page_images:
+                        if len(image_data) <= attachment_limit:
+                            attachments.append((image_name, image_data))
+                        else:
+                            failures.append(
+                                f"{label}: η εικόνα {image_name} ξεπερνά το όριο αποστολής."
+                            )
+                except (pymupdf.FileDataError, RuntimeError, ValueError) as exc:
+                    failures.append(f"{label}: δεν έγινε μετατροπή σε JPG ({truncate(str(exc), 200)}).")
+
+        content_parts = ["📚 **Τρέχον πρόγραμμα σχολείου**", *details]
+        if failures:
+            content_parts.extend(["", "**Προβλήματα:**", *[f"• {item}" for item in failures]])
+        content = truncate("\n".join(content_parts), 1900)
+
+        # Discord accepts at most ten attachments per message.
+        if not attachments:
+            await interaction.followup.send(content)
+            return
+        for batch_index in range(0, len(attachments), 10):
+            batch = attachments[batch_index : batch_index + 10]
+            files = [
+                discord.File(io.BytesIO(data), filename=filename)
+                for filename, data in batch
+            ]
+            await interaction.followup.send(
+                content if batch_index == 0 else "Συνέχεια αρχείων προγράμματος σχολείου.",
+                files=files,
+            )
 
     # ------------------------------------------------------------------
     # /status
