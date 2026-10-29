@@ -10,9 +10,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import discord
-import pymupdf
 from discord import app_commands
 from discord.ext import commands
+
+try:
+    import pymupdf
+except ImportError:  # pragma: no cover - optional runtime dependency
+    pymupdf = None
 
 from .categories import CATEGORY_INFO, CATEGORY_ORDER, Category
 from .monitor import CheckInProgress, CheckSummary
@@ -28,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 def _render_pdf_pages_as_jpegs(pdf_data: bytes, filename: str) -> list[tuple[str, bytes]]:
     """Render each PDF page to a readable, size-bounded JPEG attachment."""
+
+    if pymupdf is None:
+        raise RuntimeError("Το PyMuPDF δεν είναι εγκατεστημένο.")
 
     results: list[tuple[str, bytes]] = []
     with pymupdf.open(stream=pdf_data, filetype="pdf") as document:
@@ -233,21 +240,28 @@ class TimetableCog(commands.Cog):
                     )
 
             if include_jpg:
-                try:
-                    page_images = await asyncio.to_thread(
-                        _render_pdf_pages_as_jpegs,
-                        downloaded.data,
-                        downloaded.attachment_filename,
+                if pymupdf is None:
+                    failures.append(
+                        f"{label}: η μετατροπή σε JPG δεν είναι διαθέσιμη (λείπει το PyMuPDF)."
                     )
-                    for image_name, image_data in page_images:
-                        if len(image_data) <= attachment_limit:
-                            attachments.append((image_name, image_data))
-                        else:
-                            failures.append(
-                                f"{label}: η εικόνα {image_name} ξεπερνά το όριο αποστολής."
-                            )
-                except (pymupdf.FileDataError, RuntimeError, ValueError) as exc:
-                    failures.append(f"{label}: δεν έγινε μετατροπή σε JPG ({truncate(str(exc), 200)}).")
+                else:
+                    try:
+                        page_images = await asyncio.to_thread(
+                            _render_pdf_pages_as_jpegs,
+                            downloaded.data,
+                            downloaded.attachment_filename,
+                        )
+                        for image_name, image_data in page_images:
+                            if len(image_data) <= attachment_limit:
+                                attachments.append((image_name, image_data))
+                            else:
+                                failures.append(
+                                    f"{label}: η εικόνα {image_name} ξεπερνά το όριο αποστολής."
+                                )
+                    except Exception as exc:  # noqa: BLE001 - don't let one PDF break the command
+                        failures.append(
+                            f"{label}: δεν έγινε μετατροπή σε JPG ({truncate(str(exc), 200)})."
+                        )
 
         content_parts = ["📚 **Τρέχον πρόγραμμα σχολείου**", *details]
         if failures:
