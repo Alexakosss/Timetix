@@ -34,18 +34,31 @@ class PostResult:
 
 
 class Notifier:
-    def __init__(self, config: Config, bot: Any | None) -> None:
+    def __init__(self, config: Config, bot: Any | None, db: Any | None = None) -> None:
         self.config = config
         self.bot = bot
+        self.db = db
         self._warned_test_channel = False
 
-    async def resolve_channel(self) -> discord.abc.Messageable:
+    async def resolve_channel(self, guild_id: int | None = None) -> discord.abc.Messageable:
         if self.bot is None:
             raise NotificationError("Discord client is not available.")
         channel_id = self.config.destination_channel_id
+
+        if guild_id is not None and self.db is not None:
+            try:
+                setting = self.db.get_guild_setting(guild_id)
+                if setting and setting.get("channel_id"):
+                    if self.config.test_channel_id:
+                        channel_id = self.config.test_channel_id
+                    else:
+                        channel_id = int(setting["channel_id"])
+            except Exception:
+                logger.debug("Failed to load guild setting for %s", guild_id, exc_info=True)
+
         if channel_id is None:
             raise NotificationError(
-                "No Discord channel is configured (CHANNEL_ID / TEST_CHANNEL_ID)."
+                "No Discord channel is configured (CHANNEL_ID / TEST_CHANNEL_ID or /setup)."
             )
 
         channel = self.bot.get_channel(channel_id)
@@ -54,7 +67,7 @@ class Notifier:
                 channel = await self.bot.fetch_channel(channel_id)
             except discord.NotFound as exc:
                 raise NotificationError(
-                    f"Discord channel {channel_id} was not found. Check CHANNEL_ID."
+                    f"Discord channel {channel_id} was not found. Check configuration."
                 ) from exc
             except discord.Forbidden as exc:
                 raise NotificationError(
@@ -81,6 +94,7 @@ class Notifier:
         downloaded: DownloadedDocument,
         *,
         is_update: bool,
+        guild_id: int | None = None,
     ) -> PostResult:
         if self.config.dry_run:
             logger.info(
@@ -92,7 +106,7 @@ class Notifier:
             )
             return PostResult(sent=False, used_link=False, reason="dry-run")
 
-        channel = await self.resolve_channel()
+        channel = await self.resolve_channel(guild_id=guild_id)
         attachment_limit = self._attachment_limit(channel)
         attachment_filename = downloaded.attachment_filename
 

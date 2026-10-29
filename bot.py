@@ -142,7 +142,7 @@ class TimetableBot(commands.Bot):
     async def setup_hook(self) -> None:
         self.session = create_session(self.config)
         self.scraper = TimetableScraper(self.config, self.session)
-        self.notifier = Notifier(self.config, self)
+        self.notifier = Notifier(self.config, self, self.db)
         self.monitor = Monitor(self.config, self.db, self.scraper, self.notifier)
 
         await self.add_cog(TimetableCog(self))

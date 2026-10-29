@@ -136,6 +136,54 @@ class TimetableCog(commands.Cog):
         self.bot = bot
 
     # ------------------------------------------------------------------
+    # /setup
+    # ------------------------------------------------------------------
+    @app_commands.command(
+        name="setup",
+        description="Ρύθμιση του bot για αυτόν τον server (διαχειριστές)",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.checks.cooldown(1, 30.0, key=lambda i: (i.guild_id, i.user.id))
+    async def setup(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+    ) -> None:
+        if self.bot.db is None:
+            await interaction.response.send_message(
+                "Το bot δεν έχει συνδεθεί με τη βάση δεδομένων.", ephemeral=True
+            )
+            return
+
+        self.bot.db.upsert_guild_setting(interaction.guild_id, channel.id)
+        await interaction.response.send_message(
+            f"✅ Ρυθμίστηκε! Τα ωρολόγια θα ανακοινώνονται στο {channel.mention}.",
+            ephemeral=True,
+        )
+
+    # ------------------------------------------------------------------
+    # /disable
+    # ------------------------------------------------------------------
+    @app_commands.command(
+        name="disable",
+        description="Απενεργοποίηση ανακοινώσεων για αυτόν τον server (διαχειριστές)",
+    )
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def disable(self, interaction: discord.Interaction) -> None:
+        if self.bot.db is None:
+            await interaction.response.send_message(
+                "Το bot δεν έχει συνδεθεί με τη βάση δεδομένων.", ephemeral=True
+            )
+            return
+        self.bot.db.remove_guild_setting(interaction.guild_id)
+        await interaction.response.send_message(
+            "✅ Οι ανακοινώσεις απενεργοποιήθηκαν για αυτόν τον server.",
+            ephemeral=True,
+        )
+
+    # ------------------------------------------------------------------
     # /check_timetables
     # ------------------------------------------------------------------
     @app_commands.command(

@@ -46,8 +46,21 @@ CREATE TABLE IF NOT EXISTS bot_state (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS guild_settings (
+    guild_id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    timetable_url TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    dry_run INTEGER,
+    check_interval_minutes INTEGER,
+    role_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_timetables_category ON timetables(category);
 CREATE INDEX IF NOT EXISTS idx_versions_posted ON versions(category, content_hash, posted);
+CREATE INDEX IF NOT EXISTS idx_guild_settings_enabled ON guild_settings(enabled);
 """
 
 
@@ -143,6 +156,25 @@ class Database:
             self._conn.execute(
                 "ALTER TABLE versions ADD COLUMN is_baseline INTEGER NOT NULL DEFAULT 0"
             )
+
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                guild_id TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                timetable_url TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                dry_run INTEGER,
+                check_interval_minutes INTEGER,
+                role_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_guild_settings_enabled ON guild_settings(enabled)"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -614,6 +646,76 @@ class Database:
                 1 if is_baseline else 0,
             ),
         )
+
+    # ------------------------------------------------------------------
+    # Guild settings (multi-server support)
+    # ------------------------------------------------------------------
+    def upsert_guild_setting(
+        self,
+        guild_id: int,
+        channel_id: int,
+        timetable_url: str | None = None,
+        enabled: bool = True,
+        dry_run: bool | None = None,
+        check_interval_minutes: int | None = None,
+        role_id: int | None = None,
+    ) -> None:
+        from .utils import utc_now_iso
+
+        now = utc_now_iso()
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO guild_settings (
+                    guild_id, channel_id, timetable_url, enabled,
+                    dry_run, check_interval_minutes, role_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    timetable_url = COALESCE(excluded.timetable_url, guild_settings.timetable_url),
+                    enabled = excluded.enabled,
+                    dry_run = excluded.dry_run,
+                    check_interval_minutes = excluded.check_interval_minutes,
+                    role_id = excluded.role_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(guild_id),
+                    str(channel_id),
+                    timetable_url,
+                    1 if enabled else 0,
+                    1 if dry_run is True else (0 if dry_run is False else None),
+                    check_interval_minutes,
+                    str(role_id) if role_id is not None else None,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_guild_setting(self, guild_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM guild_settings WHERE guild_id = ?",
+                (str(guild_id),),
+            ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def get_enabled_guilds(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM guild_settings WHERE enabled = 1"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def remove_guild_setting(self, guild_id: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM guild_settings WHERE guild_id = ?",
+                (str(guild_id),),
+            )
 
     # ------------------------------------------------------------------
     # Status helpers
